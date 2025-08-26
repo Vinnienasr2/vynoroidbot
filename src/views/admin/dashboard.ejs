@@ -1,0 +1,244 @@
+<div class="container-fluid">
+    <!-- Stats Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3 mb-3">
+            <div class="card card-dashboard bg-gradient-primary h-100">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col">
+                            <h6 class="card-title text-white-50">Monthly Revenue</h6>
+                            <h3 class="mb-0">KES <%= stats.earnings.toFixed(2) %></h3>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-money-bill-wave icon"></i>
+                        </div>
+                    </div>
+                    <div class="mt-3 text-white-50 small">
+                        <i class="fas fa-calendar-alt"></i> Current Month
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-3 mb-3">
+            <div class="card card-dashboard bg-gradient-success h-100">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col">
+                            <h6 class="card-title text-white-50">Total Movies</h6>
+                            <h3 class="mb-0"><%= stats.movies %></h3>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-film icon"></i>
+                        </div>
+                    </div>
+                    <div class="mt-3 text-white-50 small">
+                        <a href="/admin/movies" class="text-white text-decoration-none">
+                            <i class="fas fa-arrow-right me-1"></i> Manage Movies
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-3 mb-3">
+            <div class="card card-dashboard bg-gradient-warning h-100">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col">
+                            <h6 class="card-title text-white-50">Total Series</h6>
+                            <h3 class="mb-0"><%= stats.series %></h3>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-tv icon"></i>
+                        </div>
+                    </div>
+                    <div class="mt-3 text-white-50 small">
+                        <a href="/admin/series" class="text-white text-decoration-none">
+                            <i class="fas fa-arrow-right me-1"></i> Manage Series
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-3 mb-3">
+            <div class="card card-dashboard bg-gradient-danger h-100">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col">
+                            <h6 class="card-title text-white-50">Active Users</h6>
+                            <h3 class="mb-0"><%= stats.activeUsers %></h3>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-users icon"></i>
+                        </div>
+                    </div>
+                    <div class="mt-3 text-white-50 small">
+                        <a href="/admin/users" class="text-white text-decoration-none">
+                            <i class="fas fa-arrow-right me-1"></i> Manage Users
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Chart and Recent Transactions -->
+    <div class="row">
+        <div class="col-lg-8 mb-4">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white">
+                    <h5 class="mb-0">Monthly Overview</h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="dashboardChart" height="300"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-lg-4 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Recent Transactions</h5>
+                    <a href="/admin/transactions" class="btn btn-sm btn-outline-primary">
+                        View All
+                    </a>
+                </div>
+                <div class="card-body p-0">
+                    <div class="list-group list-group-flush">
+                        <% if(recentTransactions.length === 0) { %>
+                            <div class="list-group-item text-center py-4">
+                                <p class="text-muted mb-0">No transactions found.</p>
+                            </div>
+                        <% } else { %>
+                            <% recentTransactions.forEach(function(transaction) { %>
+                                <a href="/admin/transactions/<%= transaction.id %>" class="list-group-item list-group-item-action py-3">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <h6 class="mb-0"><%= transaction.content_title || 'Unknown Content' %></h6>
+                                        <span class="badge bg-<%= transaction.status === 'completed' ? 'success' : (transaction.status === 'pending' ? 'warning' : 'danger') %>">
+                                            <%= transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1) %>
+                                        </span>
+                                    </div>
+                                    <div class="d-flex justify-content-between text-muted small mt-1">
+                                        <div>
+                                            <i class="fas fa-user me-1"></i>
+                                            <%= transaction.user_username || transaction.first_name || 'Unknown User' %>
+                                        </div>
+                                        <div>
+                                            <i class="fas fa-money-bill-wave me-1"></i>
+                                            KES <%= formatAmount(transaction.amount) %>
+                                        </div>
+                                    </div>
+                                    <div class="text-muted small mt-1">
+                                        <i class="far fa-clock me-1"></i>
+                                        <%= formatDate(transaction.created_at) %>
+                                    </div>
+                                </a>
+                            <% }); %>
+                        <% } %>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Quick Actions -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white">
+                    <h5 class="mb-0">Quick Actions</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <a href="/admin/movies/add" class="btn btn-outline-primary w-100 py-3">
+                                <i class="fas fa-plus-circle mb-2 d-block" style="font-size: 24px;"></i>
+                                Add New Movie
+                            </a>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <a href="/admin/series/add" class="btn btn-outline-primary w-100 py-3">
+                                <i class="fas fa-plus-circle mb-2 d-block" style="font-size: 24px;"></i>
+                                Add New Series
+                            </a>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <a href="/admin/settings" class="btn btn-outline-primary w-100 py-3">
+                                <i class="fas fa-cog mb-2 d-block" style="font-size: 24px;"></i>
+                                Bot Settings
+                            </a>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <a href="/admin/transactions" class="btn btn-outline-primary w-100 py-3">
+                                <i class="fas fa-search mb-2 d-block" style="font-size: 24px;"></i>
+                                Search Transactions
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize chart
+        const chartData = JSON.parse('<%= chartData %>');
+        const ctx = document.getElementById('dashboardChart').getContext('2d');
+        
+        new Chart(ctx, {
+            type: 'line',
+            data: chartData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            borderDash: [2, 4]
+                        },
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: 'Count'
+                        }
+                    },
+                    y1: {
+                        beginAtZero: true,
+                        position: 'right',
+                        grid: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Amount (KES)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'bottom'
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                interaction: {
+                    mode: 'nearest',
+                    axis: 'x',
+                    intersect: false
+                }
+            }
+        });
+    });
+</script>
