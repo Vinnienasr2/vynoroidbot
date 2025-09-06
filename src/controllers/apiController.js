@@ -13,19 +13,56 @@ const path = require('path');
 const mpesaCallback = async (req, res) => {
   try {
     const callbackData = req.body;
-    
-    // Log callback data
     console.log('M-Pesa callback received:', JSON.stringify(callbackData));
-    
+
     // Process callback
     const success = await processMpesaCallback(callbackData);
-    
+
     if (success) {
+      // Optionally, send content to user if transaction is completed
+      const transactionCode = callbackData.Body?.stkCallback?.AccountReference;
+      if (transactionCode) {
+        const txRows = await query('SELECT * FROM transactions WHERE transaction_code = ?', [transactionCode]);
+        if (txRows.length && txRows[0].status === 'completed') {
+          const tx = txRows[0];
+          const chatId = tx.user_id;
+          if (tx.type === 'movie') {
+            const movies = await query('SELECT * FROM movies WHERE id = ?', [tx.content_id]);
+            if (movies.length) {
+              await bot.sendVideo(chatId, movies[0].file_id, {
+                caption: `🎬 *${movies[0].title}*\n\nEnjoy your movie!`,
+                parse_mode: 'Markdown'
+              });
+            }
+          } else if (tx.type === 'series') {
+            // Get episode range from transaction (if stored)
+            // For this, you need to store startEp and endEp in the transaction when purchasing
+            // Example assumes columns start_ep and end_ep exist in transactions
+            const startEp = tx.start_ep;
+            const endEp = tx.end_ep;
+            if (startEp && endEp) {
+              const episodes = await query('SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ?', [tx.content_id, startEp, endEp]);
+              console.log(`[TEMP LOG] Sending episodes for transaction ${transactionCode}:`, episodes.map(e => e.episode_number));
+              for (const ep of episodes) {
+                await bot.sendMessage(chatId, `[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
+                await bot.sendDocument(chatId, ep.file_id);
+              }
+            } else {
+              // Fallback: send all episodes in the series
+              const episodes = await query('SELECT * FROM episodes WHERE series_id = ?', [tx.content_id]);
+              console.log(`[TEMP LOG] Sending ALL episodes for transaction ${transactionCode}:`, episodes.map(e => e.episode_number));
+              for (const ep of episodes) {
+                await bot.sendMessage(chatId, `[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
+                await bot.sendDocument(chatId, ep.file_id);
+              }
+            }
+          }
+        }
+      }
       res.status(200).json({ ResultCode: 0, ResultDesc: 'Success' });
     } else {
       res.status(400).json({ ResultCode: 1, ResultDesc: 'Failed' });
     }
-    
   } catch (error) {
     console.error('M-Pesa callback error:', error);
     res.status(500).json({ ResultCode: 1, ResultDesc: 'Server error' });

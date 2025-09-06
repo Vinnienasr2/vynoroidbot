@@ -53,8 +53,11 @@ const verifyToken = async (req, res, next) => {
  * Check if user is authenticated for web routes
  */
 const isAuthenticated = (req, res, next) => {
-  // Check if session token exists
-  if (!req.session.token || !req.session.admin) {
+  // Check if session exists and has token/admin
+  if (!req.session || !req.session.token || !req.session.admin) {
+    if (req.session) {
+      req.session.redirectAfterLogin = req.originalUrl;
+    }
     return res.redirect('/auth/login');
   }
   

@@ -68,8 +68,10 @@ const login = async (req, res) => {
       email: admin.email
     };
     
-    // Redirect to admin dashboard
-    res.redirect('/admin/dashboard');
+  // Redirect to originally requested page if available
+  const redirectUrl = req.session.redirectAfterLogin || '/admin/dashboard';
+  req.session.redirectAfterLogin = null;
+  res.redirect(redirectUrl);
     
   } catch (error) {
     console.error('Login error:', error);

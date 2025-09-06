@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Files Not In Database</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-3 col-lg-2 bg-white border-end min-vh-100 p-0">
+                <% include('../partials/sidebar', { activePage: 'files' }) %>
+            </div>
+            <div class="col-md-9 col-lg-10 p-4">
+                <h2 class="mb-4">Files Not In Database</h2>
+                <table class="table table-bordered table-striped">
+                    <thead>
+                        <tr>
+                            <th>Caption</th>
+                            <th>File ID (Filename)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% files.forEach(file => { %>
+                        <tr>
+                            <td><%= file.caption %></td>
+                            <td><%= file.file_id %></td>
+                        </tr>
+                        <% }) %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

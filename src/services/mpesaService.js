@@ -2,6 +2,16 @@
  * M-Pesa payment service
  */
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+
+function logErrorToFile(error) {
+  const logPath = path.join(__dirname, '../../logs/error.log');
+  const logMsg = `[${new Date().toISOString()}] ${typeof error === 'string' ? error : JSON.stringify(error)}\n`;
+  fs.appendFile(logPath, logMsg, err => {
+    if (err) console.error('Failed to write error log:', err);
+  });
+}
 const { query } = require('../config/database');
 
 /**
@@ -10,7 +20,6 @@ const { query } = require('../config/database');
 const generateMpesaToken = async (consumerKey, consumerSecret) => {
   try {
     const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
-    
     const response = await axios({
       method: 'GET',
       url: 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials',
@@ -18,12 +27,10 @@ const generateMpesaToken = async (consumerKey, consumerSecret) => {
         'Authorization': `Basic ${auth}`
       }
     });
-    
     return response.data.access_token;
-    
   } catch (error) {
-    console.error('Error generating M-Pesa token:', error);
-    throw new Error('Failed to generate M-Pesa authentication token');
+    logErrorToFile(error);
+    throw new Error('Failed to connect to M-Pesa. Please try again later.');
   }
 };
 
@@ -59,7 +66,7 @@ const initiateMpesaPayment = async (phoneNumber, amount, transactionCode) => {
       Password: password,
       Timestamp: timestamp,
       TransactionType: 'CustomerPayBillOnline',
-      Amount: amount,
+      Amount: parseInt(amount, 10), // Ensure Amount is integer
       PartyA: phoneNumber,
       PartyB: businessShortCode,
       PhoneNumber: phoneNumber,
@@ -104,40 +111,51 @@ const initiateMpesaPayment = async (phoneNumber, amount, transactionCode) => {
  */
 const processMpesaCallback = async (callbackData) => {
   try {
-    // Check if it's a successful transaction
+    // Get top-level fields
+    const merchantRequestID = callbackData.Body.stkCallback.MerchantRequestID;
+    const checkoutRequestID = callbackData.Body.stkCallback.CheckoutRequestID;
     const resultCode = callbackData.Body.stkCallback.ResultCode;
-    
+    const resultDesc = callbackData.Body.stkCallback.ResultDesc;
+
     if (resultCode !== 0) {
-      console.log('M-Pesa transaction failed:', callbackData.Body.stkCallback.ResultDesc);
-      return false;
-    }
+      console.log('M-Pesa transaction failed:', resultDesc);
+      try {
+        // ...existing code...
+        // Send STK push request
+        const response = await axios({
+          method: 'POST',
+          url: 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          data: requestData
+        });
+        console.log('M-Pesa STK push response:', response.data);
+        // Return response
+        return {
+          success: true,
+          checkoutRequestID: response.data.CheckoutRequestID,
+          responseCode: response.data.ResponseCode,
+          responseDescription: response.data.ResponseDescription
+        };
+      } catch (error) {
+        logErrorToFile(error);
+        return {
+          success: false,
+          error: 'Failed to initiate payment. Please check your details and try again.'
+        };
+      }
+      //   
     
-    // Get transaction details
-    const callbackMetadata = callbackData.Body.stkCallback.CallbackMetadata.Item;
-    const amount = callbackMetadata.find(item => item.Name === 'Amount').Value;
-    const mpesaReceiptNumber = callbackMetadata.find(item => item.Name === 'MpesaReceiptNumber').Value;
-    const transactionDate = callbackMetadata.find(item => item.Name === 'TransactionDate').Value;
-    const phoneNumber = callbackMetadata.find(item => item.Name === 'PhoneNumber').Value;
-    
-    // Get transaction reference from Account Reference
-    const transactionCode = callbackData.Body.stkCallback.AccountReference;
-    
-    // Update transaction status in database
-    const updateResult = await query(
-      `UPDATE transactions 
-      SET status = ?, 
-          updated_at = CURRENT_TIMESTAMP 
-      WHERE transaction_code = ?`,
-      ['completed', transactionCode]
-    );
-    
+    };
+
     if (updateResult.affectedRows === 0) {
       console.error('No transaction found with code:', transactionCode);
       return false;
     }
-    
+
     console.log(`Transaction ${transactionCode} completed successfully`);
-    
     return true;
     
   } catch (error) {
@@ -188,29 +206,31 @@ const checkTransactionStatus = async (checkoutRequestID) => {
     console.log('M-Pesa transaction status response:', response.data);
     
     // Check result code
-    if (response.data.ResultCode === '0') {
-      return {
-        success: true,
-        status: 'COMPLETED',
-        message: response.data.ResultDesc
-      };
-    } else {
+      if (response.data.ResultCode === '0') {
+        // Transaction successful
+        return {
+          success: true,
+          status: 'SUCCESS',
+          message: response.data.ResultDesc || 'Transaction completed successfully',
+          data: response.data
+        };
+      } else {
+        // Transaction failed or pending
+        return {
+          success: false,
+          status: response.data.ResultCode,
+          message: response.data.ResultDesc || 'Transaction not successful',
+          data: response.data
+        };
+      }
+    } catch (error) {
+      console.error('Error checking M-Pesa transaction status:', error);
       return {
         success: false,
-        status: 'FAILED',
-        message: response.data.ResultDesc
+        status: 'ERROR',
+        message: error.message || 'Failed to check transaction status'
       };
     }
-    
-  } catch (error) {
-    console.error('Error checking M-Pesa transaction status:', error);
-    
-    return {
-      success: false,
-      status: 'ERROR',
-      message: error.message || 'Failed to check transaction status'
-    };
-  }
 };
 
 module.exports = {

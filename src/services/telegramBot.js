@@ -1,6 +1,5 @@
-/**
- * Telegram bot service
- */
+  // TEMP: Test series delivery with simulateSuccessfulPayment
+
 const TelegramBot = require('node-telegram-bot-api');
 const { query } = require('../config/database');
 const pdfGenerator = require('../utils/pdfGenerator');
@@ -16,7 +15,47 @@ const initTelegramBot = async () => {
     console.error('Bot token not configured in .env');
     return;
   }
-  bot = new TelegramBot(botToken, { polling: true });
+  // Use webhook in production, polling in development
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (isProduction) {
+    const webhookUrl = `${baseUrl}/bot${botToken}`;
+    bot = new TelegramBot(botToken, { webHook: { port: process.env.PORT || 3000 } });
+    bot.setWebHook(webhookUrl);
+    console.log('Telegram bot started in webhook mode:', webhookUrl);
+  } else {
+    bot = new TelegramBot(botToken, { polling: true });
+    console.log('Telegram bot started in polling mode');
+  }
+
+  // Save incoming media messages to telegram_files table
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    let file_id = null;
+    let caption = msg.caption || '';
+    let media_type = null;
+
+    if (msg.photo) {
+      // Get largest photo
+      const photo = msg.photo[msg.photo.length - 1];
+      file_id = photo.file_id;
+      media_type = 'photo';
+    } else if (msg.video) {
+      file_id = msg.video.file_id;
+      media_type = 'video';
+    } else if (msg.document) {
+      file_id = msg.document.file_id;
+      media_type = 'document';
+    }
+
+    if (file_id) {
+      // Check if already saved
+      const exists = await query('SELECT id FROM telegram_files WHERE file_id = ?', [file_id]);
+      if (!exists.length) {
+        await query('INSERT INTO telegram_files (file_id, caption, chat_id, message_id, media_type) VALUES (?, ?, ?, ?, ?)', [file_id, caption, chatId, messageId, media_type]);
+      }
+    }
+  });
   // /start command: register user and send welcome message
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
@@ -29,8 +68,8 @@ const initTelegramBot = async () => {
       await query('INSERT INTO users (telegram_id, username, first_name, last_name, is_active) VALUES (?, ?, ?, ?, ?)', [chatId, username, firstName, lastName, true]);
     }
     // Send welcome message
-  const welcome = welcomeMessage || `Welcome, ${firstName}!`;
-  bot.sendMessage(chatId, welcome, {
+    const welcome = welcomeMessage || `Welcome, ${firstName}!`;
+    bot.sendMessage(chatId, welcome, {
       reply_markup: {
         keyboard: [['Movies', 'Series'], ['My Transactions', 'Help']],
         resize_keyboard: true
@@ -38,13 +77,17 @@ const initTelegramBot = async () => {
     });
   });
 
-  // Movies flow
-  bot.onText(/Movies/, async (msg) => {
+/**
+ * Telegram bot service
+ */
+
+  // Unified handlers for keyboard buttons
+  bot.onText(/^Movies$/, async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'Please enter the movie title:');
+    bot.sendMessage(chatId, 'Please enter the movie title (whole word):');
     bot.once('message', async (response) => {
-      const title = response.text;
-      const movies = await query('SELECT * FROM movies WHERE title LIKE ?', [`%${title}%`]);
+      const title = response.text.trim();
+      const movies = await query('SELECT * FROM movies WHERE title REGEXP ?', [`[[:<:]]${title}[[:>:]]`]);
       if (!movies.length) {
         await bot.sendMessage(chatId, 'Sorry, no movies found with that title. Please try again with a different title.');
         return;
@@ -61,14 +104,14 @@ const initTelegramBot = async () => {
         });
       }
     });
+  });
 
-  // Series flow
-  bot.onText(/Series/, async (msg) => {
+  bot.onText(/^Series$/, async (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 'Please enter the series title:');
     bot.once('message', async (response) => {
       const title = response.text;
-      const series = await query('SELECT * FROM series WHERE title LIKE ?', [`%${title}%`]);
+      const series = await query('SELECT * FROM series WHERE title REGEXP ?', [`\\b${title}\\b`]);
       if (!series.length) {
         return bot.sendMessage(chatId, 'Series not found.');
       }
@@ -76,62 +119,58 @@ const initTelegramBot = async () => {
       bot.sendPhoto(chatId, s.thumbnail, { caption: `${s.title}` });
       bot.sendMessage(chatId, 'Enter episode range (e.g., 1-10):');
       bot.once('message', async (epRes) => {
-        const range = epRes.text.split('-').map(Number);
-        const episodes = await query('SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ?', [s.id, range[0], range[1]]);
+        const episodeRange = epRes.text.trim();
+        let startEp, endEp;
+        if (episodeRange.includes('-')) {
+          const parts = episodeRange.split('-').map(Number);
+          startEp = parts[0];
+          endEp = parts[1];
+        } else {
+          startEp = endEp = Number(episodeRange);
+        }
+        if (isNaN(startEp) || isNaN(endEp)) {
+          return bot.sendMessage(chatId, 'Invalid episode range. Please enter a number or a range like 1-10');
+        }
+        const episodes = await query('SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ?', [s.id, startEp, endEp]);
         if (!episodes.length) {
           return bot.sendMessage(chatId, 'No episodes found in this range.');
         }
-        const totalCost = episodes.reduce((sum, ep) => sum + ep.cost, 0);
-        bot.sendMessage(chatId, `Total cost: KES ${totalCost}`);
+        const movies = await query('SELECT * FROM movies');
+        const moviesCost = movies.reduce((sum, m) => sum + (Number(m.cost) || 0), 0);
+        const totalCost = episodes.reduce((sum, ep) => sum + (Number(ep.cost) || 0), 0) + moviesCost;
+        bot.sendMessage(chatId, `Total cost: KES ${totalCost.toFixed(2)}`);
+        const userRows = await query('SELECT id FROM users WHERE telegram_id = ?', [chatId]);
+        if (!userRows.length) {
+          return bot.sendMessage(chatId, 'You are not registered. Please use /start to register.');
+        }
+        const userId = userRows[0].id;
+        // Store transaction with episode_range, start_ep, end_ep
+        await query(
+          'INSERT INTO transactions (user_id, transaction_code, amount, type, content_id, episode_range, start_ep, end_ep, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            userId,
+            `SER${Date.now()}`,
+            totalCost,
+            'series',
+            s.id,
+            episodeRange,
+            startEp,
+            endEp,
+            'M-Pesa',
+            'pending'
+          ]
+        );
         bot.sendMessage(chatId, 'Click to purchase:', {
           reply_markup: {
-            inline_keyboard: [[{ text: 'Purchase', callback_data: `buy_series_${s.id}_${range[0]}_${range[1]}` }]]
+            inline_keyboard: [[{ text: 'Purchase', callback_data: `purchase_series_${s.id}_${startEp}-${endEp}` }]]
           }
         });
       });
     });
   });
 
-  // Handle series purchase
-  bot.on('callback_query', async (queryData) => {
-    const chatId = queryData.message.chat.id;
-    const data = queryData.data;
-    if (data.startsWith('buy_series_')) {
-      const parts = data.split('_');
-      const seriesId = parts[2];
-      const startEp = Number(parts[3]);
-      const endEp = Number(parts[4]);
-      const episodes = await query('SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ?', [seriesId, startEp, endEp]);
-      if (!episodes.length) {
-        return bot.sendMessage(chatId, 'No episodes available for this range.');
-      }
-      // Ask for phone number
-      bot.sendMessage(chatId, 'Enter your M-Pesa phone number (format: 2547XXXXXXXX):');
-      bot.once('message', async (phoneMsg) => {
-        const phoneNumber = phoneMsg.text;
-        bot.sendMessage(chatId, 'Initiating payment...');
-        const transactionCode = `SER${Date.now()}`;
-        const totalCost = episodes.reduce((sum, ep) => sum + ep.cost, 0);
-        const paymentResult = await mpesaService.initiateMpesaPayment(phoneNumber, totalCost, transactionCode);
-        if (paymentResult.success) {
-          bot.sendMessage(chatId, 'Payment request sent. Please complete the payment on your phone.');
-          // Save transaction as pending
-          await query('INSERT INTO transactions (user_id, type, content_id, amount, status, code) VALUES (?, ?, ?, ?, ?, ?)', [chatId, 'series', seriesId, totalCost, 'pending', transactionCode]);
-          // Optionally poll/check status and send episodes on success
-          // For demo, send episodes immediately
-          for (const ep of episodes) {
-            bot.sendDocument(chatId, ep.file_id);
-          }
-        } else {
-          bot.sendMessage(chatId, `Payment failed: ${paymentResult.error}`);
-        }
-      });
-    }
-  });
-
-  // My Transactions
-  bot.onText(/My Transactions/, async (msg) => {
-    const chatId = msg.chat.id;
+  bot.onText(/^My Transactions$/, async (msg) => {
+  const chatId = msg.chat.id;
   const transactions = await query('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC', [chatId]);
   const user = (await query('SELECT * FROM users WHERE telegram_id = ?', [chatId]))[0];
   const pdfBuffer = await pdfGenerator.generatePDF(transactions, user);
@@ -140,12 +179,11 @@ const initTelegramBot = async () => {
   bot.sendMessage(chatId, `PDF password: ${user.telegram_id.toString().slice(-6)}`);
   });
 
-  // Help section
-  bot.onText(/Help/, (msg) => {
+  bot.onText(/^Help$/, (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 'This bot allows you to buy movies and series. Use the buttons to navigate. For help, contact support.');
   });
-// ...existing code...
+
     
     // Register user on first message
     bot.on('message', async (msg) => {
@@ -257,8 +295,6 @@ const initTelegramBot = async () => {
       // Answer callback query
       if (typeof ctx.answerCallbackQuery === 'function') {
         await ctx.answerCallbackQuery();
-      } else if (typeof ctx.answerCbQuery === 'function') {
-        await ctx.answerCbQuery();
       }
     });
   // End callback_query handler
@@ -268,8 +304,7 @@ const initTelegramBot = async () => {
   // Enable graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
-})
-}
+};
 
 // User sessions storage
 const userSessions = {};
@@ -426,14 +461,20 @@ const handlePhoneNumberInput = async (ctx, phoneNumber, session) => {
       const movie = (await query('SELECT * FROM movies WHERE id = ?', [session.contentId]))[0];
       paymentResult = await mpesaService.initiateMpesaPayment(phoneNumber, movie.cost, session.transactionCode);
     } else if (session.transactionType === 'series') {
-      // Get total cost for series episodes
-      // For simplicity, you may want to fetch and sum episode costs here
-      paymentResult = await mpesaService.initiateMpesaPayment(phoneNumber, 1, session.transactionCode); // Replace 1 with actual cost
+      // Get correct total cost from transaction
+      const transactionRows = await query('SELECT amount FROM transactions WHERE transaction_code = ?', [session.transactionCode]);
+      const amount = transactionRows.length ? Number(transactionRows[0].amount) : 1;
+      paymentResult = await mpesaService.initiateMpesaPayment(phoneNumber, amount, session.transactionCode);
     }
     console.log('Mpesa payment result:', paymentResult);
 
-    // For sandbox, always simulate successful payment
-    await simulateSuccessfulPayment(ctx, session.transactionCode, session.transactionType, session.contentId);
+    if (paymentResult.success) {
+      // STK push sent, wait for callback to confirm payment
+      await bot.sendMessage(ctx.chat?.id || ctx.message?.chat?.id, 'Payment request sent. Please complete the payment on your phone. You will receive your content after payment confirmation.');
+    } else {
+      // STK push failed, return payment failed message
+      await bot.sendMessage(ctx.chat?.id || ctx.message?.chat?.id, `Payment failed: ${paymentResult.error || 'Unable to initiate STK push.'}`);
+    }
 
     // Reset user session
     setUserSession(userId, { state: 'IDLE' });
@@ -449,96 +490,6 @@ const handlePhoneNumberInput = async (ctx, phoneNumber, session) => {
   }
 };
 
-// Simulate successful payment
-const simulateSuccessfulPayment = async (ctx, transactionCode, contentType, contentId) => {
-  try {
-    const chatId = ctx.chat?.id || ctx.message?.chat?.id;
-    // Update transaction status
-    await query(
-      'UPDATE transactions SET status = ? WHERE transaction_code = ?',
-      ['completed', transactionCode]
-    );
-
-    await bot.sendMessage(chatId, 'Payment processed successfully! Sending your content...');
-
-    // Get channel ID from settings
-    const settings = await query('SELECT channel_id FROM settings LIMIT 1');
-    const channelId = settings[0].channel_id;
-
-    if (contentType === 'movie') {
-      // Get movie details
-      const movies = await query('SELECT * FROM movies WHERE id = ?', [contentId]);
-
-      if (!movies.length) {
-        await bot.sendMessage(chatId, 'Sorry, this movie is no longer available.');
-        return;
-      }
-
-      const movie = movies[0];
-
-      // Send movie from private channel using file_id
-      await bot.sendVideo(chatId, movie.file_id, {
-        caption: `🎬 *${movie.title}*\n\nEnjoy your movie!`,
-        parse_mode: 'Markdown'
-      });
-
-    } else if (contentType === 'series') {
-      // Parse episode range
-      const rangeMatch = ctx.session?.episodeRange?.match(/^(\d+)-(\d+)$/);
-
-      if (!rangeMatch) {
-        await bot.sendMessage(chatId, 'Invalid episode range. Please try again.');
-        return;
-      }
-
-      const startEpisode = parseInt(rangeMatch[1]);
-      const endEpisode = parseInt(rangeMatch[2]);
-
-      // Get series details
-      const seriesResult = await query('SELECT * FROM series WHERE id = ?', [contentId]);
-
-      if (!seriesResult.length) {
-        await bot.sendMessage(chatId, 'Series not found. Please try again.');
-        return;
-      }
-
-      const series = seriesResult[0];
-
-      // Get episodes
-      const episodes = await query(
-        'SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ? ORDER BY episode_number',
-        [contentId, startEpisode, endEpisode]
-      );
-
-      if (!episodes.length) {
-        await bot.sendMessage(chatId, 'No episodes found in the specified range.');
-        return;
-      }
-
-      // Send series title
-      await bot.sendMessage(chatId, `📺 *${series.title}*\n\nSending ${episodes.length} episodes...`, {
-        parse_mode: 'Markdown'
-      });
-
-      // Send each episode
-      for (const episode of episodes) {
-        await bot.sendVideo(chatId, episode.file_id, {
-          caption: `📺 *${series.title}* - Episode ${episode.episode_number}`,
-          parse_mode: 'Markdown'
-        });
-      }
-    }
-
-    await bot.sendMessage(chatId, 'Thank you for your purchase! Use /start to browse more content.');
-
-  } catch (error) {
-    console.error('Error simulating payment:', error);
-    const chatId = ctx.chat?.id || ctx.message?.chat?.id;
-    if (chatId) {
-      await bot.sendMessage(chatId, 'Sorry, an error occurred while processing your content. Please contact support.');
-    }
-  }
-};
 
 // Handle series command
 const handleSeriesCommand = async (ctx) => {
@@ -630,10 +581,28 @@ const handleEpisodeRangeSelection = async (ctx, episodeRange, seriesId) => {
     const series = seriesResult[0];
     
     // Get episodes in the specified range
-    const episodes = await query(
-      'SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ? ORDER BY episode_number',
-      [seriesId, startEpisode, endEpisode]
-    );
+    let episodes;
+    try {
+      episodes = await query(
+        'SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ? ORDER BY episode_number',
+        [seriesId, startEpisode, endEpisode]
+      );
+      console.log('[DEBUG] Queried episodes:', episodes);
+    } catch (err) {
+      console.error('[ERROR] Episode query failed:', err);
+      await ctx.reply('Internal error fetching episodes.');
+      return;
+    }
+    // TEMP: Send all requested episodes immediately for testing
+    for (const ep of episodes) {
+      try {
+        await ctx.reply(`[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
+        await ctx.replyWithDocument(ep.file_id);
+      } catch (err) {
+        console.error(`[ERROR] Failed to send episode ${ep.episode_number}:`, err);
+        await ctx.reply(`[ERROR] Could not send episode ${ep.episode_number}`);
+      }
+    }
     
     if (!episodes.length) {
       await ctx.reply('No episodes found in the specified range. Please try a different range.');
@@ -725,7 +694,7 @@ const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
     const users = await query('SELECT * FROM users WHERE telegram_id = ?', [ctx.from.id]);
     
     if (!users.length) {
-      await ctx.reply('Sorry, there was an error with your account. Please restart the bot with /start');
+      await bot.sendMessage(ctx.message.chat.id, 'Sorry, there was an error with your account. Please restart the bot with /start');
       return;
     }
     
@@ -744,7 +713,8 @@ const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
     );
     
     // Send payment message
-    await ctx.reply(
+    await bot.sendMessage(
+      ctx.message.chat.id,
       `Please confirm your purchase:\n\n` +
       `📺 Series: ${series.title}\n` +
       `🔢 Episodes: ${episodeRange} (${episodes.length} episodes)\n` +
@@ -764,7 +734,9 @@ const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
     
   } catch (error) {
     console.error('Error handling series purchase:', error);
-    await ctx.reply('Sorry, an error occurred during the purchase process. Please try again later.');
+    if (ctx.message && ctx.message.chat && ctx.message.chat.id) {
+      await bot.sendMessage(ctx.message.chat.id, 'Sorry, an error occurred during the purchase process. Please try again later.');
+    }
   }
 };
 

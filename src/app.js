@@ -21,6 +21,7 @@ const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
 const { connectToDatabase } = require('./config/database');
 const { initializeDatabase } = require('./models/init');
+const filesRoutes = require('./routes/files');
 
 // Create Express app
 const app = express();
@@ -34,6 +35,7 @@ app.use('/admin/settings', settingsRoutes);
 app.use('/admin/transactions', transactionsRoutes);
 app.use('/admin/series', seriesRoutes);
 app.use('/admin/movies', moviesRoutes);
+app.use('/admin/files', filesRoutes);
 const PORT = process.env.PORT || 3000;
 
 // Security middleware
