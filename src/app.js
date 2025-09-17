@@ -14,7 +14,7 @@ const morgan = require('morgan');
 const helmet = require('helmet');
 const cors = require('cors');
 
-const { initTelegramBot } = require('./services/telegramBot');
+const { initTelegramBot, getBot, botReadyPromise } = require('./services/telegramBot');
 const adminRoutes = require('./routes/admin');
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
@@ -55,15 +55,27 @@ app.use(cors());
 
 // Middleware
 app.use(morgan('dev'));
-app.use(session({
-  secret: process.env.JWT_SECRET || 'super-secret-key',
+const sessionOptions = {
+  secret: process.env.JWT_SECRET || 'dfweofwefinufwjfhodII7G8hsdjhcdhbvhdfv',
   resave: false,
   saveUninitialized: true,
-  cookie: { 
-    secure: process.env.NODE_ENV === 'production',
+  cookie: {
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   }
-}));
+};
+app.set('trust proxy', 1); // Trust first proxy (ngrok)
+app.use(session(sessionOptions));
+// Dynamically set secure flag for cookies based on request protocol (for ngrok/HTTPS tunnels)
+app.use((req, res, next) => {
+  if (req.session) {
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      req.session.cookie.secure = true;
+    } else {
+      req.session.cookie.secure = false;
+    }
+  }
+  next();
+});
 
 // Static files
 app.use(express.static(path.join(__dirname, '../public')));
@@ -77,6 +89,26 @@ app.use('/auth', authRoutes);
 app.use('/admin/users', usersRoutes);
 app.use('/admin', adminRoutes);
 app.use('/api', apiRoutes);
+
+
+// Register Telegram webhook handler immediately, but await bot readiness inside
+const botToken = process.env.TELEGRAM_BOT_TOKEN;
+if (botToken) {
+  app.post(`/bot${botToken}`, async (req, res) => {
+    try {
+      await botReadyPromise();
+      const bot = getBot();
+      if (bot && bot.processUpdate) {
+        bot.processUpdate(req.body);
+        res.sendStatus(200);
+      } else {
+        res.status(503).send('Bot not initialized');
+      }
+    } catch (e) {
+      res.status(503).send('Bot not ready');
+    }
+  });
+}
 
 // Root route
 app.get('/', (req, res) => {
@@ -109,12 +141,11 @@ app.use((req, res) => {
     // Initialize database tables
     await initializeDatabase();
     
+    // Initialize Telegram bot before starting server
+    await initTelegramBot();
     // Start server
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
-      
-      // Initialize Telegram bot
-      initTelegramBot();
     });
   } catch (error) {
     console.error('Failed to start the application:', error);

@@ -5,26 +5,40 @@ const { query } = require('../config/database');
 const pdfGenerator = require('../utils/pdfGenerator');
 const mpesaService = require('./mpesaService');
 let bot;
+let botReadyPromise;
 
 const initTelegramBot = async () => {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const channelId = process.env.TELEGRAM_CHANNEL_ID;
   const baseUrl = process.env.BASE_URL || '';
   const welcomeMessage = process.env.WELCOME_MESSAGE || `Welcome!`;
+  console.log('[TelegramBot] Initializing Telegram bot...');
   if (!botToken) {
-    console.error('Bot token not configured in .env');
+    console.error('[TelegramBot] Bot token not configured in .env!');
     return;
-  }
-  // Use webhook in production, polling in development
-  const isProduction = process.env.NODE_ENV === 'production';
-  if (isProduction) {
-    const webhookUrl = `${baseUrl}/bot${botToken}`;
-    bot = new TelegramBot(botToken, { webHook: { port: process.env.PORT || 3000 } });
-    bot.setWebHook(webhookUrl);
-    console.log('Telegram bot started in webhook mode:', webhookUrl);
   } else {
-    bot = new TelegramBot(botToken, { polling: true });
-    console.log('Telegram bot started in polling mode');
+    console.log('[TelegramBot] Bot token found:', botToken.slice(0, 8) + '...');
+  }
+  // Strictly use webhook in production, polling in development
+  const isProduction = process.env.NODE_ENV === 'production';
+  try {
+    if (isProduction) {
+      const webhookUrl = `${baseUrl}/bot${botToken}`;
+      bot = new TelegramBot(botToken, { webHook: true });
+      botReadyPromise = bot.setWebHook(webhookUrl).then(() => {
+        console.log('[TelegramBot] Telegram bot started in webhook mode:', webhookUrl);
+      });
+    } else {
+      bot = new TelegramBot(botToken, { polling: true });
+      botReadyPromise = Promise.resolve(console.log('[TelegramBot] Telegram bot started in polling mode'));
+    }
+    if (bot) {
+      console.log('[TelegramBot] Bot instance created successfully.');
+    } else {
+      console.error('[TelegramBot] Bot instance is undefined after creation!');
+    }
+  } catch (err) {
+    console.error('[TelegramBot] Error during bot initialization:', err);
   }
 
   // Save incoming media messages to telegram_files table
@@ -56,33 +70,49 @@ const initTelegramBot = async () => {
       }
     }
   });
-  // /start command: register user and send welcome message
-  bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    const firstName = msg.from.first_name || '';
-    const lastName = msg.from.last_name || '';
-    const username = msg.from.username || '';
-    // Register user if not exists
-    const users = await query('SELECT * FROM users WHERE telegram_id = ?', [chatId]);
-    if (!users.length) {
-      await query('INSERT INTO users (telegram_id, username, first_name, last_name, is_active) VALUES (?, ?, ?, ?, ?)', [chatId, username, firstName, lastName, true]);
-    }
-    // Send welcome message
-    const welcome = welcomeMessage || `Welcome, ${firstName}!`;
-    bot.sendMessage(chatId, welcome, {
-      reply_markup: {
-        keyboard: [['Movies', 'Series'], ['My Transactions', 'Help']],
-        resize_keyboard: true
-      }
-    });
-  });
+  // // /start command: register user and send welcome message
+  // bot.onText(/\/start/, async (msg) => {
+  //   const chatId = msg.chat.id;
+  //   const firstName = msg.from.first_name || '';
+  //   const lastName = msg.from.last_name || '';
+  //   const username = msg.from.username || '';
+  //   // Register user if not exists
+  //   const users = await query('SELECT * FROM users WHERE telegram_id = ?', [chatId]);
+  //   if (!users.length) {
+  //     await query('INSERT INTO users (telegram_id, username, first_name, last_name, is_active) VALUES (?, ?, ?, ?, ?)', [chatId, username, firstName, lastName, true]);
+  //   }
+  //   // Send welcome message
+  //   const welcome = welcomeMessage || `Welcome, ${firstName}!`;
+  //   bot.sendMessage(chatId, welcome, {
+  //     reply_markup: {
+  //       keyboard: [['Movies', 'Series'], ['My Transactions', 'Help']],
+  //       resize_keyboard: true
+  //     }
+  //   });
+  // });
 
 /**
  * Telegram bot service
  */
 
+    bot.onText(/\/start/, async (msg) => {
+      const chatId = msg.chat.id;
+      const firstName = msg.from.first_name || '';
+      bot.sendMessage(chatId, `${welcomeMessage}\n\nHi ${firstName}! What would you like to do? Use the buttons below to access contents, click ❓ Help to know how to use it... `, {
+        reply_markup: {
+          keyboard: [
+            [{ text: '🎬 Movies' }, { text: '📺 Series' }],
+            [{ text: '💳 My Transactions' }, { text: '❓ Help' }]
+          ],
+          resize_keyboard: true
+        }
+      });
+    });
+
+
+
   // Unified handlers for keyboard buttons
-  bot.onText(/^Movies$/, async (msg) => {
+  bot.onText(/^🎬 Movies$/, async (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 'Please enter the movie title (whole word):');
     bot.once('message', async (response) => {
@@ -106,7 +136,7 @@ const initTelegramBot = async () => {
     });
   });
 
-  bot.onText(/^Series$/, async (msg) => {
+  bot.onText(/^📺 Series$/, async (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 'Please enter the series title:');
     bot.once('message', async (response) => {
@@ -169,7 +199,7 @@ const initTelegramBot = async () => {
     });
   });
 
-  bot.onText(/^My Transactions$/, async (msg) => {
+  bot.onText(/^💳 My Transactions$/, async (msg) => {
   const chatId = msg.chat.id;
   const transactions = await query('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC', [chatId]);
   const user = (await query('SELECT * FROM users WHERE telegram_id = ?', [chatId]))[0];
@@ -179,9 +209,9 @@ const initTelegramBot = async () => {
   bot.sendMessage(chatId, `PDF password: ${user.telegram_id.toString().slice(-6)}`);
   });
 
-  bot.onText(/^Help$/, (msg) => {
+  bot.onText(/^❓ Help$/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'This bot allows you to buy movies and series. Use the buttons to navigate. For help, contact support.');
+    bot.sendMessage(chatId, `${handleHelpCommand}`);
   });
 
     
@@ -203,19 +233,7 @@ const initTelegramBot = async () => {
     });
     
     // Start command
-    bot.onText(/\/start/, async (msg) => {
-      const chatId = msg.chat.id;
-      const firstName = msg.from.first_name || '';
-      bot.sendMessage(chatId, `${welcomeMessage}\n\nHi ${firstName}! What would you like to do?`, {
-        reply_markup: {
-          keyboard: [
-            [{ text: '🎬 Movies' }, { text: '📺 Series' }],
-            [{ text: '💳 My Transactions' }, { text: '❓ Help' }]
-          ],
-          resize_keyboard: true
-        }
-      });
-    });
+
 
     // Movies command
     bot.onText(/\/movies/, async (msg) => {
@@ -245,17 +263,17 @@ const initTelegramBot = async () => {
       console.log('TelegramBot message received:', { userId, message });
 
       // Button text handling
-      if (message === '🎬 Movies') {
+      if (message === 'Movies') {
         console.log('Setting session state to WAITING_FOR_MOVIE_TITLE for user', userId);
         await handleMoviesCommand(msg);
         return;
-      } else if (message === '📺 Series') {
+      } else if (message === 'Series') {
         await handleSeriesCommand(msg);
         return;
-      } else if (message === '💳 My Transactions') {
+      } else if (message === 'My Transactions') {
         await handleTransactionsCommand(msg);
         return;
-      } else if (message === '❓ Help') {
+      } else if (message === 'Help') {
         await handleHelpCommand(msg);
         return;
       }
@@ -325,38 +343,35 @@ const setUserSession = (userId, sessionData) => {
 // Handle movies command
 const handleMoviesCommand = async (ctx) => {
   const userId = ctx.from.id;
-  
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   // Update user session
   setUserSession(userId, { state: 'WAITING_FOR_MOVIE_TITLE' });
-  
-  await ctx.reply('Please enter the title of the movie you are looking for:');
+  await bot.sendMessage(chatId, 'Please enter the title of the movie you are looking for:');
 };
 
 // Handle movie search
 const handleMovieSearch = async (ctx, movieTitle) => {
   const userId = ctx.from.id;
-  
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   try {
     console.log('handleMovieSearch called for user', userId, 'with title:', movieTitle);
     // Reset user session
     setUserSession(userId, { state: 'IDLE' });
-
     // Search for movie in database
     const movies = await query(
       'SELECT * FROM movies WHERE title LIKE ? LIMIT 5',
       [`%${movieTitle}%`]
     );
     console.log('Movies found:', movies);
-
     if (!movies.length) {
-      await ctx.reply('Sorry, no movies found with that title. Please try again with a different title.');
+      await bot.sendMessage(chatId, 'Sorry, no movies found with that title. Please try again with a different title.');
       return;
     }
-
     // Display movies
     for (const movie of movies) {
-      await ctx.replyWithPhoto(
-        { url: movie.thumbnail },
+      await bot.sendPhoto(
+        chatId,
+        movie.thumbnail,
         {
           caption: `🎬 *${movie.title}*\n\n💰 Price: KES ${movie.cost.toFixed(2)}`,
           parse_mode: 'Markdown',
@@ -368,10 +383,9 @@ const handleMovieSearch = async (ctx, movieTitle) => {
         }
       );
     }
-
   } catch (error) {
     console.error('Error handling movie search:', error);
-    await ctx.reply('Sorry, an error occurred while searching for movies. Please try again later.');
+    await bot.sendMessage(chatId, 'Sorry, an error occurred while searching for movies. Please try again later.');
   }
 };
 
@@ -494,52 +508,47 @@ const handlePhoneNumberInput = async (ctx, phoneNumber, session) => {
 // Handle series command
 const handleSeriesCommand = async (ctx) => {
   const userId = ctx.from.id;
-  
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   // Update user session
   setUserSession(userId, { state: 'WAITING_FOR_SERIES_TITLE' });
-  
-  await ctx.reply('Please enter the title of the series you are looking for:');
+  await bot.sendMessage(chatId, 'Please enter the title of the series you are looking for:');
 };
 
 // Handle series search
 const handleSeriesSearch = async (ctx, seriesTitle) => {
   const userId = ctx.from.id;
-  
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   try {
     // Search for series in database
     const seriesList = await query(
       'SELECT * FROM series WHERE title LIKE ? LIMIT 5',
       [`%${seriesTitle}%`]
     );
-    
     if (!seriesList.length) {
-      await ctx.reply('Sorry, no series found with that title. Please try again with a different title.');
+      await bot.sendMessage(chatId, 'Sorry, no series found with that title. Please try again with a different title.');
       // Reset user session
       setUserSession(userId, { state: 'IDLE' });
       return;
     }
-    
     // Display series
     for (const series of seriesList) {
-      await ctx.replyWithPhoto(
-        { url: series.thumbnail },
+      await bot.sendPhoto(
+        chatId,
+        series.thumbnail,
         {
           caption: `📺 *${series.title}*\n\nPlease send the episode range you want to purchase (e.g. 1-3):`,
           parse_mode: 'Markdown'
         }
       );
-      
       // Update user session to wait for episode range
       setUserSession(userId, { 
         state: 'WAITING_FOR_EPISODE_RANGE',
         seriesId: series.id 
       });
     }
-    
   } catch (error) {
     console.error('Error handling series search:', error);
-    await ctx.reply('Sorry, an error occurred while searching for series. Please try again later.');
-    
+    await bot.sendMessage(chatId, 'Sorry, an error occurred while searching for series. Please try again later.');
     // Reset user session
     setUserSession(userId, { state: 'IDLE' });
   }
@@ -548,38 +557,30 @@ const handleSeriesSearch = async (ctx, seriesTitle) => {
 // Handle episode range selection
 const handleEpisodeRangeSelection = async (ctx, episodeRange, seriesId) => {
   const userId = ctx.from.id;
-  
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   try {
     // Reset user session
     setUserSession(userId, { state: 'IDLE' });
-    
     // Validate episode range format (e.g., "1-5")
     const rangeRegex = /^(\d+)(?:-(\d+))?$/;
     const match = episodeRange.match(rangeRegex);
-    
     if (!match) {
-      await ctx.reply('Invalid episode range format. Please use format like "1-5" or just "1"');
+      await bot.sendMessage(chatId, 'Invalid episode range format. Please use format like "1-5" or just "1"');
       return;
     }
-    
     const startEpisode = parseInt(match[1]);
     const endEpisode = match[2] ? parseInt(match[2]) : startEpisode;
-    
     if (startEpisode > endEpisode) {
-      await ctx.reply('Invalid range. Start episode cannot be greater than end episode.');
+      await bot.sendMessage(chatId, 'Invalid range. Start episode cannot be greater than end episode.');
       return;
     }
-    
     // Get series info
     const seriesResult = await query('SELECT * FROM series WHERE id = ?', [seriesId]);
-    
     if (!seriesResult.length) {
-      await ctx.reply('Series not found. Please try again.');
+      await bot.sendMessage(chatId, 'Series not found. Please try again.');
       return;
     }
-    
     const series = seriesResult[0];
-    
     // Get episodes in the specified range
     let episodes;
     try {
@@ -590,48 +591,40 @@ const handleEpisodeRangeSelection = async (ctx, episodeRange, seriesId) => {
       console.log('[DEBUG] Queried episodes:', episodes);
     } catch (err) {
       console.error('[ERROR] Episode query failed:', err);
-      await ctx.reply('Internal error fetching episodes.');
+      await bot.sendMessage(chatId, 'Internal error fetching episodes.');
       return;
     }
     // TEMP: Send all requested episodes immediately for testing
     for (const ep of episodes) {
       try {
-        await ctx.reply(`[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
-        await ctx.replyWithDocument(ep.file_id);
+        await bot.sendMessage(chatId, `[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
+        await bot.sendDocument(chatId, ep.file_id);
       } catch (err) {
         console.error(`[ERROR] Failed to send episode ${ep.episode_number}:`, err);
-        await ctx.reply(`[ERROR] Could not send episode ${ep.episode_number}`);
+        await bot.sendMessage(chatId, `[ERROR] Could not send episode ${ep.episode_number}`);
       }
     }
-    
     if (!episodes.length) {
-      await ctx.reply('No episodes found in the specified range. Please try a different range.');
+      await bot.sendMessage(chatId, 'No episodes found in the specified range. Please try a different range.');
       return;
     }
-    
     // Calculate total cost
     const totalCost = episodes.reduce((sum, episode) => sum + parseFloat(episode.cost), 0);
-    
     // Check if all requested episodes are available
     const availableEpisodes = episodes.map(ep => ep.episode_number);
     const missingEpisodes = [];
-    
     for (let i = startEpisode; i <= endEpisode; i++) {
       if (!availableEpisodes.includes(i)) {
         missingEpisodes.push(i);
       }
     }
-    
     let message = `📺 *${series.title}*\n\n`;
-    
     if (missingEpisodes.length > 0) {
       message += `⚠️ Episodes not available: ${missingEpisodes.join(', ')}\n\n`;
     }
-    
     message += `🔢 Episodes: ${startEpisode}-${endEpisode} (${episodes.length} available)\n` +
                `💰 Total Price: KES ${totalCost.toFixed(2)}`;
-    
-    await ctx.reply(message, {
+    await bot.sendMessage(chatId, message, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -642,67 +635,53 @@ const handleEpisodeRangeSelection = async (ctx, episodeRange, seriesId) => {
         ]
       }
     });
-    
   } catch (error) {
     console.error('Error handling episode range selection:', error);
-    await ctx.reply('Sorry, an error occurred. Please try again later.');
+    await bot.sendMessage(chatId, 'Sorry, an error occurred. Please try again later.');
   }
 };
 
 // Handle series purchase
 const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
   const userId = ctx.from.id;
-  
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   try {
     // Parse episode range
     const rangeRegex = /^(\d+)-(\d+)$/;
     const match = episodeRange.match(rangeRegex);
-    
     if (!match) {
-      await ctx.reply('Invalid episode range. Please try again.');
+      await bot.sendMessage(chatId, 'Invalid episode range. Please try again.');
       return;
     }
-    
     const startEpisode = parseInt(match[1]);
     const endEpisode = parseInt(match[2]);
-    
     // Get series info
     const seriesResult = await query('SELECT * FROM series WHERE id = ?', [seriesId]);
-    
     if (!seriesResult.length) {
-      await ctx.reply('Series not found. Please try again.');
+      await bot.sendMessage(chatId, 'Series not found. Please try again.');
       return;
     }
-    
     const series = seriesResult[0];
-    
     // Get episodes in the specified range
     const episodes = await query(
       'SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ? ORDER BY episode_number',
       [seriesId, startEpisode, endEpisode]
     );
-    
     if (!episodes.length) {
-      await ctx.reply('No episodes found in the specified range. Please try a different range.');
+      await bot.sendMessage(chatId, 'No episodes found in the specified range. Please try a different range.');
       return;
     }
-    
     // Calculate total cost
     const totalCost = episodes.reduce((sum, episode) => sum + parseFloat(episode.cost), 0);
-    
     // Get user from database
     const users = await query('SELECT * FROM users WHERE telegram_id = ?', [ctx.from.id]);
-    
     if (!users.length) {
-      await bot.sendMessage(ctx.message.chat.id, 'Sorry, there was an error with your account. Please restart the bot with /start');
+      await bot.sendMessage(chatId, 'Sorry, there was an error with your account. Please restart the bot with /start');
       return;
     }
-    
     const user = users[0];
-    
     // Generate transaction code
     const transactionCode = `SER${Date.now().toString().slice(-8)}${Math.floor(Math.random() * 1000)}`;
-    
     // Create pending transaction
     await query(
       `INSERT INTO transactions 
@@ -711,10 +690,9 @@ const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
         (?, ?, ?, ?, ?, ?, ?, ?)`,
       [user.id, transactionCode, totalCost, 'series', seriesId, episodeRange, 'M-Pesa', 'pending']
     );
-    
     // Send payment message
     await bot.sendMessage(
-      ctx.message.chat.id,
+      chatId,
       `Please confirm your purchase:\n\n` +
       `📺 Series: ${series.title}\n` +
       `🔢 Episodes: ${episodeRange} (${episodes.length} episodes)\n` +
@@ -722,7 +700,6 @@ const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
       `Transaction code: ${transactionCode}\n\n` +
       `Please send your M-Pesa phone number (format: 254XXXXXXXXX) to complete the transaction.`
     );
-    
     // Update session to wait for phone number
     setUserSession(userId, { 
       state: 'WAITING_FOR_PHONE', 
@@ -731,30 +708,24 @@ const handleSeriesPurchase = async (ctx, seriesId, episodeRange) => {
       contentId: seriesId,
       episodeRange: episodeRange
     });
-    
   } catch (error) {
     console.error('Error handling series purchase:', error);
-    if (ctx.message && ctx.message.chat && ctx.message.chat.id) {
-      await bot.sendMessage(ctx.message.chat.id, 'Sorry, an error occurred during the purchase process. Please try again later.');
-    }
+    await bot.sendMessage(chatId, 'Sorry, an error occurred during the purchase process. Please try again later.');
   }
 };
 
 // Handle transactions command
 const handleTransactionsCommand = async (ctx) => {
+  const chatId = ctx.chat?.id || ctx.message?.chat?.id || ctx.from.id;
   try {
     const telegramId = ctx.from.id;
-    
     // Get user from database
     const users = await query('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
-    
     if (!users.length) {
-      await ctx.reply('Sorry, there was an error with your account. Please restart the bot with /start');
+      await bot.sendMessage(chatId, 'Sorry, there was an error with your account. Please restart the bot with /start');
       return;
     }
-    
     const user = users[0];
-    
     // Get user transactions
     const transactions = await query(
       `SELECT t.*, 
@@ -771,47 +742,37 @@ const handleTransactionsCommand = async (ctx) => {
       LIMIT 10`,
       [user.id]
     );
-    
     if (!transactions.length) {
-      await ctx.reply('You have no transactions yet. Use /movies or /series to browse content.');
+      await bot.sendMessage(chatId, 'You have no transactions yet. Use /movies or /series to browse content.');
       return;
     }
-    
     // Generate PDF with transactions
     const pdfBuffer = await generatePDF(transactions, user);
-    
     // Create a temporary file path
     const tempDir = path.join(__dirname, '../../temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
-    
     const filePath = path.join(tempDir, `transactions_${user.id}.pdf`);
-    
     // Save PDF to file
     fs.writeFileSync(filePath, pdfBuffer);
-    
     // Send PDF document
-    await ctx.replyWithDocument({ source: filePath }, {
+    await bot.sendDocument(chatId, filePath, {
       caption: 'Here is your transaction history. The PDF is password protected.'
     });
-    
     // Send password (in real scenario, this should be sent separately)
     const password = telegramId.toString().slice(-6);
-    await ctx.reply(`Use this password to open the PDF: ${password}`);
-    
+    await bot.sendMessage(chatId, `Use this password to open the PDF: ${password}`);
     // Delete the temporary file
     fs.unlinkSync(filePath);
-    
   } catch (error) {
     console.error('Error handling transactions command:', error);
-    await ctx.reply('Sorry, an error occurred while generating your transaction history. Please try again later.');
+    await bot.sendMessage(chatId, 'Sorry, an error occurred while generating your transaction history. Please try again later.');
   }
 };
 
 // Handle help command
-const handleHelpCommand = async (ctx) => {
-  const helpMessage = `
+const handleHelpCommand = `
 *Movie and Series Bot Help*
 
 This bot allows you to browse and purchase movies and series. Here's how to use it:
@@ -836,7 +797,7 @@ This bot allows you to browse and purchase movies and series. Here's how to use 
 1. Use /series command
 2. Enter the series title
 3. Select a series from the search results
-4. Enter episode range (e.g., 1-5)
+4. Enter episode range (e.g. 1-5)
 5. Click the Purchase button
 6. Enter your M-Pesa phone number
 7. Complete the payment
@@ -846,10 +807,8 @@ This bot allows you to browse and purchase movies and series. Here's how to use 
 Contact our support at support@example.com
 `;
 
-  await ctx.reply(helpMessage, {
-    parse_mode: 'Markdown',
-    disable_web_page_preview: true
-  });
+module.exports = {
+  initTelegramBot,
+  getBot: () => bot,
+  botReadyPromise: () => botReadyPromise
 };
-
-module.exports = { initTelegramBot, bot };

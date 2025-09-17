@@ -3,7 +3,33 @@
  */
 const { query } = require('../config/database');
 const { processMpesaCallback } = require('../services/mpesaService');
-const { bot } = require('../services/telegramBot');
+let bot;
+let botReadyPromise;
+function getValidBot() {
+  try {
+    const telegramBotModule = require('../services/telegramBot');
+    if (typeof telegramBotModule.getBot === 'function') {
+      const b = telegramBotModule.getBot();
+      if (!b) {
+        console.error('[M-Pesa Callback] getBot() returned undefined!');
+      }
+      return b;
+    } else {
+      console.error('[M-Pesa Callback] getBot is not a function in telegramBotModule:', telegramBotModule);
+    }
+  } catch (e) {
+    console.error('[M-Pesa Callback] Error requiring telegramBot:', e);
+  }
+  return undefined;
+}
+try {
+  const telegramBotModule = require('../services/telegramBot');
+  if (typeof telegramBotModule.botReadyPromise === 'function') {
+    botReadyPromise = telegramBotModule.botReadyPromise();
+  }
+} catch (e) {
+  console.error('[M-Pesa Callback] Error requiring telegramBot:', e);
+}
 const fs = require('fs');
 const path = require('path');
 
@@ -15,46 +41,86 @@ const mpesaCallback = async (req, res) => {
     const callbackData = req.body;
     console.log('M-Pesa callback received:', JSON.stringify(callbackData));
 
+    // Always get a fresh bot instance after awaiting readiness
+    try {
+      const telegramBotModule = require('../services/telegramBot');
+      if (typeof telegramBotModule.botReadyPromise === 'function') {
+        await telegramBotModule.botReadyPromise();
+      }
+      if (typeof telegramBotModule.getBot === 'function') {
+        bot = telegramBotModule.getBot();
+      }
+      if (!bot) {
+        console.error('[M-Pesa Callback] Telegram bot instance is still undefined after botReadyPromise! Skipping Telegram send.');
+      }
+    } catch (err) {
+      console.error('[M-Pesa Callback] Error getting Telegram bot:', err);
+    }
+
     // Process callback
     const success = await processMpesaCallback(callbackData);
 
     if (success) {
-      // Optionally, send content to user if transaction is completed
-      const transactionCode = callbackData.Body?.stkCallback?.AccountReference;
+      // Optionally, send content to user if transaction is completed and result_code is 0
+  let transactionCode = callbackData.Body?.stkCallback?.AccountReference;
+  let checkoutRequestId = callbackData.Body?.stkCallback?.CheckoutRequestID;
+      let txRows = [];
       if (transactionCode) {
-        const txRows = await query('SELECT * FROM transactions WHERE transaction_code = ?', [transactionCode]);
-        if (txRows.length && txRows[0].status === 'completed') {
-          const tx = txRows[0];
-          const chatId = tx.user_id;
-          if (tx.type === 'movie') {
-            const movies = await query('SELECT * FROM movies WHERE id = ?', [tx.content_id]);
-            if (movies.length) {
-              await bot.sendVideo(chatId, movies[0].file_id, {
-                caption: `🎬 *${movies[0].title}*\n\nEnjoy your movie!`,
+        txRows = await query('SELECT * FROM transactions WHERE transaction_code = ?', [transactionCode]);
+      } else {
+        // Fallback: use CheckoutRequestID if AccountReference is missing
+        const checkoutRequestId = callbackData.Body?.stkCallback?.CheckoutRequestID;
+        if (checkoutRequestId) {
+          txRows = await query('SELECT * FROM transactions WHERE checkout_request_id = ?', [checkoutRequestId]);
+        }
+      }
+      if (txRows.length && txRows[0].status === 'completed' && Number(txRows[0].result_code) === 0) {
+        const tx = txRows[0];
+        // Look up Telegram chat ID from users table
+        let chatId = null;
+        try {
+          const userRows = await query('SELECT telegram_id FROM users WHERE id = ?', [tx.user_id]);
+          chatId = userRows.length ? userRows[0].telegram_id : null;
+          if (!chatId) {
+            console.error('[M-Pesa Callback] No Telegram chat ID found for user:', tx.user_id);
+          }
+        } catch (err) {
+          console.error('[M-Pesa Callback] Error looking up Telegram chat ID:', err);
+        }
+        if (!bot) {
+          console.error('[M-Pesa Callback] Telegram bot instance is undefined, cannot send content to user!');
+        } else if (tx.type === 'movie') {
+          const movies = await query('SELECT * FROM movies WHERE id = ?', [tx.content_id]);
+          if (movies.length) {
+            await bot.sendVideo(chatId, movies[0].file_id, {
+              caption: `🎬 *${movies[0].title}*\n\nEnjoy your movie!`,
+              parse_mode: 'Markdown'
+            });
+          }
+        } else if (tx.type === 'series') {
+          // Get episode range from transaction (if stored)
+          // For this, you need to store startEp and endEp in the transaction when purchasing
+          // Example assumes columns start_ep and end_ep exist in transactions
+          const startEp = tx.start_ep;
+          const endEp = tx.end_ep;
+          if (startEp && endEp) {
+            const episodes = await query('SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ?', [tx.content_id, startEp, endEp]);
+            console.log(`[TEMP LOG] Sending episodes for transaction ${transactionCode || checkoutRequestId}:`, episodes.map(e => e.episode_number));
+            for (const ep of episodes) {
+              await bot.sendDocument(chatId, ep.file_id, {
+                caption: `📺 *${ep.title || 'Episode'} ${ep.episode_number}*\n\nEnjoy your series!`,
                 parse_mode: 'Markdown'
               });
             }
-          } else if (tx.type === 'series') {
-            // Get episode range from transaction (if stored)
-            // For this, you need to store startEp and endEp in the transaction when purchasing
-            // Example assumes columns start_ep and end_ep exist in transactions
-            const startEp = tx.start_ep;
-            const endEp = tx.end_ep;
-            if (startEp && endEp) {
-              const episodes = await query('SELECT * FROM episodes WHERE series_id = ? AND episode_number BETWEEN ? AND ?', [tx.content_id, startEp, endEp]);
-              console.log(`[TEMP LOG] Sending episodes for transaction ${transactionCode}:`, episodes.map(e => e.episode_number));
-              for (const ep of episodes) {
-                await bot.sendMessage(chatId, `[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
-                await bot.sendDocument(chatId, ep.file_id);
-              }
-            } else {
-              // Fallback: send all episodes in the series
-              const episodes = await query('SELECT * FROM episodes WHERE series_id = ?', [tx.content_id]);
-              console.log(`[TEMP LOG] Sending ALL episodes for transaction ${transactionCode}:`, episodes.map(e => e.episode_number));
-              for (const ep of episodes) {
-                await bot.sendMessage(chatId, `[TEMP] Sending episode ${ep.episode_number}: file_id=${ep.file_id}`);
-                await bot.sendDocument(chatId, ep.file_id);
-              }
+          } else {
+            // Fallback: send all episodes in the series
+            const episodes = await query('SELECT * FROM episodes WHERE series_id = ?', [tx.content_id]);
+            console.log(`[TEMP LOG] Sending ALL episodes for transaction ${transactionCode || checkoutRequestId}:`, episodes.map(e => e.episode_number));
+            for (const ep of episodes) {
+              await bot.sendDocument(chatId, ep.file_id, {
+                caption: `📺 *${ep.title || 'Episode'} ${ep.episode_number}*\n\nEnjoy your series!`,
+                parse_mode: 'Markdown'
+              });
             }
           }
         }

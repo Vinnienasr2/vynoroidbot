@@ -85,9 +85,17 @@ const initiateMpesaPayment = async (phoneNumber, amount, transactionCode) => {
       },
       data: requestData
     });
-    
+
     console.log('M-Pesa STK push response:', response.data);
-    
+
+    // Save CheckoutRequestID to the transaction
+    if (response.data.CheckoutRequestID) {
+      await query(
+        'UPDATE transactions SET checkout_request_id = ? WHERE transaction_code = ?',
+        [response.data.CheckoutRequestID, transactionCode]
+      );
+    }
+
     // Return response
     return {
       success: true,
@@ -117,46 +125,31 @@ const processMpesaCallback = async (callbackData) => {
     const resultCode = callbackData.Body.stkCallback.ResultCode;
     const resultDesc = callbackData.Body.stkCallback.ResultDesc;
 
-    if (resultCode !== 0) {
-      console.log('M-Pesa transaction failed:', resultDesc);
-      try {
-        // ...existing code...
-        // Send STK push request
-        const response = await axios({
-          method: 'POST',
-          url: 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          data: requestData
-        });
-        console.log('M-Pesa STK push response:', response.data);
-        // Return response
-        return {
-          success: true,
-          checkoutRequestID: response.data.CheckoutRequestID,
-          responseCode: response.data.ResponseCode,
-          responseDescription: response.data.ResponseDescription
-        };
-      } catch (error) {
-        logErrorToFile(error);
-        return {
-          success: false,
-          error: 'Failed to initiate payment. Please check your details and try again.'
-        };
-      }
-      //   
-    
-    };
+    // Extract values from CallbackMetadata
+    const callbackItems = callbackData.Body.stkCallback.CallbackMetadata?.Item || [];
+    const mpesaReceipt = callbackItems.find(i => i.Name === 'MpesaReceiptNumber')?.Value || '';
+    const amount = callbackItems.find(i => i.Name === 'Amount')?.Value || 0;
+    const phone = callbackItems.find(i => i.Name === 'PhoneNumber')?.Value || '';
 
+    // Update the transaction in the database using checkout_request_id
+    const updateResult = await query(
+      'UPDATE transactions SET status = ?, mpesa_receipt = ?, amount = ?, phone = ?, result_code = ?, result_desc = ?, completed_at = NOW() WHERE checkout_request_id = ?',
+      [
+        resultCode === 0 ? 'completed' : 'failed',
+        mpesaReceipt,
+        amount,
+        phone,
+        resultCode,
+        resultDesc,
+        checkoutRequestID
+      ]
+    );
     if (updateResult.affectedRows === 0) {
-      console.error('No transaction found with code:', transactionCode);
+      console.error('No transaction found with checkout_request_id:', checkoutRequestID);
       return false;
     }
-
-    console.log(`Transaction ${transactionCode} completed successfully`);
-    return true;
+    console.log(`Transaction with checkout_request_id ${checkoutRequestID} updated. Status: ${resultCode === 0 ? 'completed' : 'failed'}`);
+    return resultCode === 0;
     
   } catch (error) {
     console.error('Error processing M-Pesa callback:', error);
