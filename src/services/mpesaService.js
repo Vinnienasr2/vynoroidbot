@@ -22,7 +22,7 @@ const generateMpesaToken = async (consumerKey, consumerSecret) => {
     const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
     const response = await axios({
       method: 'GET',
-      url: 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials',
+      url: 'https://api.safaricom.co.ke/oauth/v1/generate',
       headers: {
         'Authorization': `Basic ${auth}`
       }
@@ -78,7 +78,7 @@ const initiateMpesaPayment = async (phoneNumber, amount, transactionCode) => {
     // Send STK push request
     const response = await axios({
       method: 'POST',
-      url: 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
+      url: 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
@@ -188,7 +188,7 @@ const checkTransactionStatus = async (checkoutRequestID) => {
     // Send query request
     const response = await axios({
       method: 'POST',
-      url: 'https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query',
+      url: 'https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
