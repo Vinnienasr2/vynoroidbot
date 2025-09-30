@@ -1,7 +1,7 @@
 /**
  * Authentication controller for admin panel
  */
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 

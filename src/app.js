@@ -9,6 +9,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const session = require('express-session');
+const MySQLStore = require('express-mysql-session')(session);
 const path = require('path');
 const morgan = require('morgan');
 const helmet = require('helmet');
@@ -55,10 +56,19 @@ app.use(cors());
 
 // Middleware
 app.use(morgan('dev'));
+const sessionStore = new MySQLStore({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 3306,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME
+});
+
 const sessionOptions = {
   secret: process.env.JWT_SECRET || 'dfweofwefinufwjfhodII7G8hsdjhcdhbvhdfv',
   resave: false,
   saveUninitialized: true,
+  store: sessionStore,
   cookie: {
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   }

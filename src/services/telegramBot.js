@@ -25,12 +25,16 @@ const initTelegramBot = async () => {
     if (isProduction) {
       const webhookUrl = `${baseUrl}/bot${botToken}`;
       bot = new TelegramBot(botToken, { webHook: true });
-      botReadyPromise = bot.setWebHook(webhookUrl).then(() => {
-        console.log('[TelegramBot] Telegram bot started in webhook mode:', webhookUrl);
-      });
+      botReadyPromise = bot.setWebHook(webhookUrl)
+        .then(() => {
+          console.log('[TelegramBot] Telegram bot started in webhook mode:', webhookUrl);
+        })
+        .catch((err) => {
+          console.error('[TelegramBot] Failed to set webhook:', err);
+        });
     } else {
-      bot = new TelegramBot(botToken, { polling: true });
-      botReadyPromise = Promise.resolve(console.log('[TelegramBot] Telegram bot started in polling mode'));
+      bot = new TelegramBot(botToken, { polling: false }); // Disable polling
+      botReadyPromise = Promise.resolve(console.log('[TelegramBot] Bot instance created (development, no polling, no webhook)'));
     }
     if (bot) {
       console.log('[TelegramBot] Bot instance created successfully.');
@@ -316,9 +320,6 @@ const initTelegramBot = async () => {
       }
     });
   // End callback_query handler
-  // Start bot with polling
-  bot.launch && bot.launch();
-  console.log('Telegram bot started with long polling');
   // Enable graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
